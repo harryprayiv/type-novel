@@ -3,7 +3,7 @@
 let
   # Default configuration for PureScript-only project
   defaultConfig = {
-    name = "typeIt"; # Default name if not provided
+    name = "type-novel"; # Default name if not provided
     projectRoot = ".";
     frontendPath = ".";
     psDirs = [ "src" "test" ];

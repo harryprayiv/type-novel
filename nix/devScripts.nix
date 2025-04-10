@@ -1,4 +1,4 @@
-# PureScript-only dev scripts for typeIt
+# PureScript-only dev scripts for type-novel
 { pkgs, name, lib, frontendPath ? ".", psDirs ? null }:
 
 let

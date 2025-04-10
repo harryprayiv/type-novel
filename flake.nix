@@ -1,5 +1,5 @@
 {
-  description = "typeIt";
+  description = "type-novel";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -16,7 +16,7 @@
 
   outputs = { self, nixpkgs, flake-utils, purescript-overlay, ... }:
     let
-      projectName = "typeIt";
+      projectName = "type-novel";
     in
     flake-utils.lib.eachSystem ["x86_64-linux" "x86_64-darwin" "aarch64-darwin"] (system: 
     let

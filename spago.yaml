@@ -1,5 +1,5 @@
 package:
-  name: typeit
+  name: type-novel
   dependencies:
     - affjax
     - affjax-web
