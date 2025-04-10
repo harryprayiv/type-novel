@@ -1,0 +1,169 @@
+/* Full viewport styling */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Main container - full screen, flex layout */
+.typing-trainer-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 90vw;
+  height: 100vh;
+  margin: 0 auto;
+  padding: 15px;
+  box-sizing: border-box;
+  background-color: #000000;
+  font-family: 'Arial', sans-serif;
+  overflow: hidden;
+}
+
+/* Flexible layout for sections */
+.load-book-section {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 10px;
+}
+
+.stats {
+  display: flex;
+  justify-content: flex-end;
+  background-color: #000000;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.text-display {
+  flex-grow: 1;
+  background-color: rgb(0, 0, 0);
+  border-radius: 5px;
+  padding: 15px;
+  margin-bottom: 10px;
+  font-size: 20px;
+  line-height: 1.6;
+  border: 1px solid #ddd;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow-y: auto;
+  /* Ensures text doesn't overflow */
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.exercise-description {
+  text-align: center;
+  font-style: italic;
+  margin-bottom: 10px;
+}
+
+.progress-indicator {
+  text-align: center;
+  margin-bottom: 10px;
+}
+
+.controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 15px;
+  padding: 10px;
+  background-color: #000000;
+  border-top: 1px solid #666666;
+  width: 100%;
+}
+
+/* Character styling */
+.char-not-typed {
+  color: #ffffff;
+}
+
+.char-correct {
+  color: #2c8e41;
+}
+
+.char-incorrect {
+  color: #c14135;
+  text-decoration: underline;
+}
+
+/* Buttons */
+.load-book-btn,
+.reset-btn,
+.next-btn {
+  padding: 8px 15px;
+  border: none;
+  border-radius: 5px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+.load-book-btn {
+  background-color: #27ae60;
+  color: white;
+}
+
+.load-book-btn:hover {
+  background-color: #219a52;
+}
+
+.reset-btn {
+  background-color: #e74c3c;
+  color: white;
+}
+
+.reset-btn:hover {
+  background-color: #c0392b;
+}
+
+.next-btn {
+  background-color: #3498db;
+  color: white;
+}
+
+.next-btn:hover {
+  background-color: #2980b9;
+}
+
+/* Hidden input - positioned fixed completely out of view */
+.hidden-input {
+  position: fixed;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.hidden-input:focus {
+  outline: none;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .typing-trainer-container {
+    padding: 10px;
+  }
+  
+  .text-display {
+    font-size: 16px;
+    padding: 10px;
+  }
+  
+  .controls {
+    flex-direction: column;
+    gap: 10px;
+    padding: 5px;
+  }
+  
+  .load-book-btn,
+  .reset-btn,
+  .next-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+}
