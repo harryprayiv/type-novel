@@ -1,0 +1,7 @@
+{
+  "name": "type-novel",
+  "private": true,
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

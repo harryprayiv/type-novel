@@ -10,12 +10,13 @@ package:
     - tuples
     - web-html
     - yoga-json
+    - now
     - deku-core: "*"
     - deku-css: "*"
     - deku-dom: "*"
 workspace:
   packageSet:
-    registry: 56.4.0
+    registry: 75.9.1
   extraPackages:
     hyrule:
       git: "https://github.com/mikesol/purescript-hyrule.git"
