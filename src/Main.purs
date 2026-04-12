@@ -1,4 +1,12 @@
-module Main where
+module Main
+  ( CharResult(..)
+  , charResult
+  , charClassKS
+  , chunkText
+  , cleanText
+  , updateStats
+  , main
+  ) where
 
 import Prelude
 
@@ -46,6 +54,14 @@ import Web.UIEvent.KeyboardEvent (KeyboardEvent, code, isComposing, key)
 -- Integer sentinel: no string construction in the classification hot path.
 -- resultClass does one pattern-match to a string literal per subscription fire.
 data CharResult = NotTyped | Cursor | Correct | Incorrect
+
+derive instance Eq CharResult
+
+instance Show CharResult where
+  show NotTyped  = "NotTyped"
+  show Cursor    = "Cursor"
+  show Correct   = "Correct"
+  show Incorrect = "Incorrect"
 
 type TypingExercise =
   { text        :: String

@@ -1,0 +1,296 @@
+[
+  [
+    "charResult Correct for matching char in middle of word",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult Cursor at position 0 for empty typed string",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult Incorrect for wrong char in middle of word",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult NotTyped for position 1 when typed is empty",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult NotTyped two positions past cursor",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult returns Correct when chars match",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult returns Cursor at typed length boundary",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult returns Incorrect when chars differ",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "charResult returns NotTyped for position beyond typed length",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText all words from content appear in chunks",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText charStrings array length matches text length",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText chars array length matches text length",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText chunk description is set correctly",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText content that fits in one chunk produces exactly one chunk",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText multiple chunks have incrementing descriptions",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText no chunk exceeds maxChars",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText returns defaultExercises for empty content",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText returns defaultExercises for whitespace-only content",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText single short word produces one chunk",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "chunkText single very long word stays in its own chunk",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText collapses mixed whitespace runs",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText collapses multiple spaces",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText converts newline to space",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText handles empty string",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText handles string with only non-printable characters",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText handles whitespace-only string",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText leaves plain ASCII unchanged",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText preserves digits",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText preserves punctuation",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText preserves tilde which is the last printable ASCII char",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText strips DEL character",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText strips leading and trailing whitespace",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "cleanText strips non-printable characters below space",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats adding correct char increments correctCount",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats adding incorrect char increments incorrectCount",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats correctCount never goes negative",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats removing a correct char decrements correctCount",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats removing an incorrect char decrements incorrectCount",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats same-length input leaves stats unchanged",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats totalTyped equals correctCount plus incorrectCount after forward typing",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats typing past end of target only updates totalTyped",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ],
+  [
+    "updateStats typing two correct chars accumulates correctly",
+    {
+      "timestamp": "1776018709943.0",
+      "success": true
+    }
+  ]
+]

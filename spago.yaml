@@ -14,6 +14,19 @@ package:
     - deku-core: "*"
     - deku-css: "*"
     - deku-dom: "*"
+  test:
+    main: Test.Main
+    dependencies:
+      - spec
+      - spec-node
+      - arrays
+      - console
+      - effect
+      - either
+      - maybe
+      - prelude
+      - strings
+      - datetime
 workspace:
   packageSet:
     registry: 75.9.1
