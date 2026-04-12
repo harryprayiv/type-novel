@@ -11,14 +11,13 @@ import Data.Array as Array
 import Data.DateTime.Instant (Instant, diff)
 import Data.Either (Either(..))
 import Data.Int (floor, toNumber)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
 import Data.String (Pattern(..), Replacement(..))
 import Data.String as String
 import Data.String.CodeUnits as CU
 import Data.Time.Duration (Seconds(..))
 import Deku.Control (text, text_)
 import Deku.Core (Nut, useRefST)
-import Data.Tuple.Nested ((/\))
 import Deku.DOM as D
 import Deku.DOM.Attributes as DA
 import Deku.DOM.Listeners as DL
@@ -29,57 +28,84 @@ import Effect (Effect)
 import Effect.Aff (Aff, launchAff_)
 import Effect.Class (liftEffect)
 import Effect.Now (now)
-import Effect.Timer (setTimeout)
+import Effect.Ref as Ref
+import Effect.Timer (TimeoutId, clearTimeout, setTimeout)
 import FRP.Poll (Poll)
+import Data.Tuple.Nested ((/\))
 import Web.DOM.ParentNode (QuerySelector(..), querySelector)
 import Web.HTML (window)
 import Web.HTML.HTMLDocument (toParentNode)
 import Web.HTML.HTMLElement (focus, fromElement)
 import Web.HTML.Window (document)
-import Web.UIEvent.KeyboardEvent (KeyboardEvent, code, key)
+import Web.UIEvent.KeyboardEvent (KeyboardEvent, code, isComposing, key)
 
 --------------------------------------------------------------------------------
 -- Types
 --------------------------------------------------------------------------------
 
--- chars is pre-computed at build/load time so the keystroke handler
--- never calls toCharArray in the hot path.
+-- Integer sentinel: no string construction in the classification hot path.
+-- resultClass does one pattern-match to a string literal per subscription fire.
+data CharResult = NotTyped | Cursor | Correct | Incorrect
+
 type TypingExercise =
   { text        :: String
-  , chars       :: Array Char
+  , chars       :: Array Char    -- pre-split at load time; no CU.toCharArray in hot path
+  , charStrings :: Array String  -- pre-computed CU.singleton per char
   , description :: String
   }
 
--- Delta-tracked so accuracy and progress are O(1) per keystroke.
 type TypingStats =
   { correctCount   :: Int
   , incorrectCount :: Int
   , totalTyped     :: Int
   }
 
--- Single state atom: one Poll fire per keystroke instead of three.
--- Eliminates three separate downstream propagations through statsDisplay.
+-- Single atom: one Poll fire per keystroke, one propagation through the graph.
+-- Collapsing typed/wpm/startTime/stats into one record eliminates three
+-- separate downstream fan-outs that the previous three-setter design caused.
 type KeystrokeState =
-  { typed     :: String
-  , wpm       :: Number
-  , startTime :: Maybe Instant
-  , stats     :: TypingStats
+  { typed         :: String
+  , wpm           :: Number
+  , startTime     :: Maybe Instant
+  , stats         :: TypingStats
+  , keyTimestamps :: Array Instant  -- newest-first ring buffer, capped at 60
+  , isTyping      :: Boolean        -- true while typing; suppresses caret blink
   }
 
-initialKS :: KeystrokeState
-initialKS =
-  { typed:     ""
-  , wpm:       0.0
-  , startTime: Nothing
-  , stats:     { correctCount: 0, incorrectCount: 0, totalTyped: 0 }
+-- Produced on chunk completion; drives the results overlay.
+type CompletionResult =
+  { wpm         :: Number
+  , accuracy    :: Number
+  , timeSecs    :: Number
+  , errors      :: Int
+  , chunkNum    :: Int
+  , totalChunks :: Int
   }
 
 --------------------------------------------------------------------------------
 -- Defaults
 --------------------------------------------------------------------------------
 
+emptyStats :: TypingStats
+emptyStats = { correctCount: 0, incorrectCount: 0, totalTyped: 0 }
+
+initialKS :: KeystrokeState
+initialKS =
+  { typed:         ""
+  , wpm:           0.0
+  , startTime:     Nothing
+  , stats:         emptyStats
+  , keyTimestamps: []
+  , isTyping:      false
+  }
+
 mkExercise :: String -> String -> TypingExercise
-mkExercise desc t = { text: t, chars: CU.toCharArray t, description: desc }
+mkExercise desc t =
+  let cs = CU.toCharArray t
+  in { text: t, chars: cs, charStrings: map CU.singleton cs, description: desc }
+
+emptyExercise :: TypingExercise
+emptyExercise = mkExercise "" ""
 
 defaultExercises :: Array TypingExercise
 defaultExercises =
@@ -91,38 +117,33 @@ defaultExercises =
       "PureScript is a strongly-typed functional language that compiles to JavaScript."
   ]
 
-emptyExercise :: TypingExercise
-emptyExercise = { text: "", chars: [], description: "" }
-
 --------------------------------------------------------------------------------
 -- Text processing
--- Everything here runs once at load time. None of it touches the hot path.
+-- Runs once at load time. Never called during typing.
 --------------------------------------------------------------------------------
 
 cleanText :: String -> String
 cleanText input =
   let
-    s0 = String.replaceAll (Pattern "\r\n")  (Replacement " ")   input
-    s1 = String.replaceAll (Pattern "\n")     (Replacement " ")   s0
-    s2 = String.replaceAll (Pattern "\x2018") (Replacement "'")   s1  -- left single quote
-    s3 = String.replaceAll (Pattern "\x2019") (Replacement "'")   s2  -- right single quote
-    s4 = String.replaceAll (Pattern "\x201C") (Replacement "\"")  s3  -- left double quote
-    s5 = String.replaceAll (Pattern "\x201D") (Replacement "\"")  s4  -- right double quote
-    s6 = String.replaceAll (Pattern "\x2013") (Replacement "-")   s5  -- en dash
-    s7 = String.replaceAll (Pattern "\x2014") (Replacement "-")   s6  -- em dash
-    s8 = String.replaceAll (Pattern "\x2026") (Replacement "...") s7  -- ellipsis
-    -- Collapse whitespace runs via split/filter/join
+    s0 = String.replaceAll (Pattern "\r\n")   (Replacement " ")    input
+    s1 = String.replaceAll (Pattern "\n")      (Replacement " ")    s0
+    s2 = String.replaceAll (Pattern "\x2018")  (Replacement "'")    s1  -- left single quote
+    s3 = String.replaceAll (Pattern "\x2019")  (Replacement "'")    s2  -- right single quote
+    s4 = String.replaceAll (Pattern "\x201C")  (Replacement "\"")   s3  -- left double quote
+    s5 = String.replaceAll (Pattern "\x201D")  (Replacement "\"")   s4  -- right double quote
+    s6 = String.replaceAll (Pattern "\x2013")  (Replacement "-")    s5  -- en dash
+    s7 = String.replaceAll (Pattern "\x2014")  (Replacement "-")    s6  -- em dash
+    s8 = String.replaceAll (Pattern "\x2026")  (Replacement "...")  s7  -- ellipsis
     s9 = String.split (Pattern " ") s8
          # Array.filter (\w -> String.length (String.trim w) > 0)
          # String.joinWith " "
-    -- Strip all non-printable and non-ASCII characters.
-    -- CU.toCharArray/fromCharArray are safe here: cleanText guarantees ASCII output.
     isPrintable c = c >= ' ' && c <= '~'
   in
     String.trim $ CU.fromCharArray $ Array.filter isPrintable $ CU.toCharArray s9
 
--- Split text into word-boundary-aligned chunks of at most maxChars characters.
--- Pre-computes the chars field on each exercise to eliminate hot-path allocations.
+-- Splits cleaned text into word-boundary-aligned chunks of at most maxChars
+-- characters. Pre-computes chars and charStrings on each exercise so the
+-- keystroke handler never allocates arrays.
 chunkText :: Int -> String -> Array TypingExercise
 chunkText maxChars content =
   let
@@ -138,7 +159,6 @@ chunkText maxChars content =
           else acc <> [ finalize (Array.length acc + 1) curWords ]
         Just { head: w, tail: ws } ->
           let wLen   = String.length w
-              -- +1 for the space separator that will be between words
               addLen = if Array.null curWords then wLen else curLen + 1 + wLen
           in
             if addLen > maxChars && not (Array.null curWords)
@@ -147,8 +167,10 @@ chunkText maxChars content =
 
     finalize :: Int -> Array String -> TypingExercise
     finalize n ws =
-      let t = String.joinWith " " ws
-      in { text: t, chars: CU.toCharArray t, description: "Chunk " <> show n }
+      let t  = String.joinWith " " ws
+          cs = CU.toCharArray t
+      in { text: t, chars: cs, charStrings: map CU.singleton cs
+         , description: "Chunk " <> show n }
   in
     case words of
       [] -> defaultExercises
@@ -156,9 +178,8 @@ chunkText maxChars content =
 
 --------------------------------------------------------------------------------
 -- Delta stats: O(1) per keystroke
---
--- Rather than scanning the full typed string each keypress, we examine only
--- the single character that was added or removed and update counts accordingly.
+-- Examines exactly one character position per event instead of scanning
+-- the full typed string.
 --------------------------------------------------------------------------------
 
 updateStats :: TypingStats -> String -> String -> Array Char -> TypingStats
@@ -168,324 +189,487 @@ updateStats prev oldTyped newTyped targetChars =
     newLen = CU.length newTyped
   in
     if newLen > oldLen then
-      -- Character appended: examine position (newLen - 1) only.
       let pos = newLen - 1
-      in case (targetChars !! pos), (CU.charAt pos newTyped) of
-        Just tc, Just ic ->
-          prev { totalTyped    = newLen
-               , correctCount   = prev.correctCount   + (if tc == ic then 1 else 0)
-               , incorrectCount = prev.incorrectCount + (if tc /= ic then 1 else 0)
-               }
-        _, _ -> prev { totalTyped = newLen }
+      in if pos >= Array.length targetChars
+         then prev { totalTyped = newLen }
+         else case (targetChars !! pos), (CU.charAt pos newTyped) of
+           Just tc, Just ic ->
+             prev { totalTyped    = newLen
+                  , correctCount   = prev.correctCount   + (if tc == ic then 1 else 0)
+                  , incorrectCount = prev.incorrectCount + (if tc /= ic then 1 else 0)
+                  }
+           _, _ -> prev { totalTyped = newLen }
 
     else if newLen < oldLen then
-      -- Character removed: un-count position (oldLen - 1) using oldTyped.
       let pos = oldLen - 1
-      in case (targetChars !! pos), (CU.charAt pos oldTyped) of
-        Just tc, Just ic ->
-          prev { totalTyped    = newLen
-               , correctCount   = prev.correctCount   - (if tc == ic then 1 else 0)
-               , incorrectCount = prev.incorrectCount - (if tc /= ic then 1 else 0)
-               }
-        _, _ -> prev { totalTyped = newLen }
+      in if pos >= Array.length targetChars
+         then prev { totalTyped = newLen }
+         else case (targetChars !! pos), (CU.charAt pos oldTyped) of
+           Just tc, Just ic ->
+             prev { totalTyped    = newLen
+                  , correctCount   = prev.correctCount   - (if tc == ic then 1 else 0)
+                  , incorrectCount = prev.incorrectCount - (if tc /= ic then 1 else 0)
+                  }
+           _, _ -> prev { totalTyped = newLen }
 
     else prev
 
 --------------------------------------------------------------------------------
--- Rendering
---
--- THE KEY PERFORMANCE CONTRACT:
---
--- renderChunk is called once per chunk advance (infrequent, user-initiated).
--- It produces N spans whose DA.klass each subscribe to typedPoll.
---
--- On every keystroke, typedPoll fires and each span's className is written
--- via charClass. This is:
---   - N className string writes  (browser batches into one layout pass)
---   - Zero node allocations
---   - Zero node removals
---
--- charClass uses CU.charAt which is O(1) direct code-unit indexing.
--- cleanText guarantees all content is ASCII, so code-unit == code-point.
--- Using Data.String.CodePoints.codePointAt would be O(i) per call due to
--- UTF-16 walking; CU.charAt avoids that entirely.
+-- Rolling WPM
+-- 10-second sliding window over a newest-first ring buffer of keystroke
+-- timestamps. Returns 0 until enough data has accumulated to be meaningful.
 --------------------------------------------------------------------------------
 
-charClass :: Int -> Char -> String -> String
-charClass i targetChar typed =
-  let typedLen = CU.length typed
+rollingWpm :: Array Instant -> Instant -> Number
+rollingWpm timestamps currentTime =
+  let
+    windowSecs = 10.0
+    recent = Array.filter
+      ( \t -> let (Seconds age) = diff currentTime t :: Seconds
+              in age <= windowSecs
+      )
+      timestamps
+    count = Array.length recent
   in
-    if i > typedLen     then "char char-not-typed"
-    else if i == typedLen then "char char-cursor"
+    if count < 2 then 0.0
     else
-      case CU.charAt i typed of
-        Nothing -> "char char-not-typed"
-        Just c  -> if c == targetChar then "char char-correct" else "char char-incorrect"
+      -- Buffer is newest-first; the oldest recent entry is the last element.
+      case Array.last recent of
+        Nothing    -> 0.0
+        Just oldest ->
+          let (Seconds elapsed) = diff currentTime oldest :: Seconds
+          in if elapsed < 0.5 then 0.0
+             -- Standard WPM definition: 5 code units = 1 word
+             else (toNumber count / 5.0) / (elapsed / 60.0)
 
--- Spans are created once. Only DA.klass subscriptions fire on subsequent keystrokes.
-renderChunk :: Array Char -> Poll String -> Array Nut
-renderChunk targetChars typedPoll =
+--------------------------------------------------------------------------------
+-- Character classification and rendering
+--
+-- charResult: O(1) via CU.charAt (direct code-unit index).
+-- cleanText guarantees ASCII output, so code-unit == code-point.
+-- Using Data.String.CodePoints.codePointAt would be O(i) per call.
+--
+-- charClassKS: takes full KeystrokeState so isTyping can suppress caret blink.
+-- Runs once per DA.klass subscription per setKS call.
+--
+-- renderChunk: builds N spans once per chunk advance.
+-- Per-keystroke work is N className writes only; zero node allocation.
+--------------------------------------------------------------------------------
+
+charResult :: Int -> Char -> String -> CharResult
+charResult i targetChar typed =
+  let len = CU.length typed
+  in
+    if i > len       then NotTyped
+    else if i == len then Cursor
+    else case CU.charAt i typed of
+      Nothing -> NotTyped
+      Just c  -> if c == targetChar then Correct else Incorrect
+
+charClassKS :: Int -> Char -> KeystrokeState -> String
+charClassKS i c ks =
+  case charResult i c ks.typed of
+    NotTyped  -> "char char-not-typed"
+    Correct   -> "char char-correct"
+    Incorrect -> "char char-incorrect"
+    Cursor    -> "char char-cursor" <> if ks.isTyping then " typing" else ""
+
+renderChunk :: Array Char -> Array String -> Poll KeystrokeState -> Array Nut
+renderChunk targetChars charStrings ksPoll =
   mapWithIndex
     ( \i c ->
         D.span
-          [ DA.klass $ charClass i c <$> typedPoll ]
-          [ text_ (CU.singleton c) ]
+          [ DA.klass $ charClassKS i c <$> ksPoll ]
+          [ text_ (fromMaybe (CU.singleton c) (charStrings !! i)) ]
     )
     targetChars
 
 --------------------------------------------------------------------------------
--- Utilities
+-- UI helpers
 --------------------------------------------------------------------------------
 
-focusElementById :: String -> Effect Unit
-focusElementById elemId = do
+focusInput :: Effect Unit
+focusInput = do
   doc <- window >>= document <#> toParentNode
-  mEl <- querySelector (QuerySelector ("#" <> elemId)) doc
+  mEl <- querySelector (QuerySelector "#typing-input") doc
   case mEl of
     Just el -> case fromElement el of
       Just htmlEl -> focus htmlEl
       Nothing     -> pure unit
     Nothing -> pure unit
 
--- Round to one decimal place for display.
 showRounded :: Number -> String
 showRounded n = show (toNumber (floor (n * 10.0)) / 10.0)
 
 loadTextFile :: String -> Aff (Either Error String)
 loadTextFile path = map (map _.body) $ AX.get ResponseFormat.string path
 
+-- Static stat cell for the results card. Pure Nut, no reactive subscriptions.
+resultStat :: String -> String -> Nut
+resultStat label value =
+  D.div [ DA.klass_ "result-stat" ]
+    [ D.div [ DA.klass_ "result-stat-value" ] [ text_ value ]
+    , D.div [ DA.klass_ "result-stat-label" ] [ text_ label ]
+    ]
+
+-- Chunk size toggle button. Reactive active state via sizePoll.
+chunkSizeBtn :: Int -> (Int -> Effect Unit) -> Poll Int -> Nut
+chunkSizeBtn size setter sizePoll =
+  D.button
+    [ DA.klass $ (\s -> "btn btn-sm" <> if s == size then " active" else "") <$> sizePoll
+    , DL.click_ $ const $ do
+        setter size
+        focusInput
+    ]
+    [ text_ (show size) ]
+
 --------------------------------------------------------------------------------
 -- Main
 --------------------------------------------------------------------------------
 
 main :: Effect Unit
-main = void $ runInBody Deku.do
+main = do
+  -- Effect.Ref for the caret-idle timer. Needs to live outside Deku.do
+  -- because TimeoutId has no Poll representation and requires imperative
+  -- read/write across the cancel-and-reschedule pattern in the hot path.
+  typingTimerRef <- Ref.new (Nothing :: Maybe TimeoutId)
 
-  -- Primary mutable state nodes.
-  setExercises    /\ exercises     <- useState defaultExercises
-  setCurrentIndex /\ currentIndex  <- useState 0
-  setKS           /\ keystrokeState <- useState initialKS
-  setStatusMsg    /\ statusMsg     <- useState ""
+  void $ runInBody Deku.do
 
-  -- ST refs: read latest values inside Effect handlers without creating
-  -- Poll subscriptions (which would cause the handler's own logic to
-  -- trigger reactive re-renders).
-  currentKSRef    <- useRefST initialKS       keystrokeState
-  currentIndexRef <- useRefST 0               currentIndex
-  exercisesRef    <- useRefST defaultExercises exercises
+    --------------------------------------------------------------------------
+    -- State
+    --------------------------------------------------------------------------
 
-  -- Derived Polls, constructed once at startup.
+    setExercises    /\ exercises      <- useState defaultExercises
+    setCurrentIndex /\ currentIndex   <- useState 0
+    setKS           /\ keystrokeState <- useState initialKS
+    setStatusMsg    /\ statusMsg      <- useState ""
+    setCompletion   /\ completion     <- useState (Nothing :: Maybe CompletionResult)
+    setChunkSize    /\ chunkSizeState <- useState 300
+    setDarkTheme    /\ darkTheme      <- useState true
 
-  let currentExercise =
-        (\exs i -> fromMaybe emptyExercise (exs !! i))
-          <$> exercises
-          <*> currentIndex
+    --------------------------------------------------------------------------
+    -- ST refs
+    -- Read in Effect handlers without creating Poll subscriptions.
+    -- Each useRefST creates an STRef that stays in sync with its Poll.
+    --------------------------------------------------------------------------
 
-  -- typedPoll: the only Poll that renderChunk's DA.klass nodes subscribe to.
-  -- Derived from keystrokeState so it fires exactly once per setKS call.
-  let typedPoll = _.typed <$> keystrokeState
+    currentKSRef    <- useRefST initialKS                            keystrokeState
+    currentIndexRef <- useRefST 0                                    currentIndex
+    exercisesRef    <- useRefST defaultExercises                     exercises
+    chunkSizeRef    <- useRefST 300                                  chunkSizeState
+    darkThemeRef    <- useRefST true                                 darkTheme
+    completionRef   <- useRefST (Nothing :: Maybe CompletionResult)  completion
 
-  -- statsDisplay fires once per keystroke (only keystrokeState changes while typing).
-  -- currentExercise only changes on chunk advance, not while typing.
-  let statsDisplay =
-        ( \ex ks ->
-            let total    = Array.length ex.chars
-                accuracy = if ks.stats.totalTyped == 0 then 100.0
-                           else   toNumber ks.stats.correctCount
-                                / toNumber ks.stats.totalTyped
-                                * 100.0
-                progress = if total == 0 then 0.0
-                           else min 100.0
-                                $   toNumber ks.stats.totalTyped
-                                  / toNumber total
+    --------------------------------------------------------------------------
+    -- Derived Polls
+    --------------------------------------------------------------------------
+
+    let currentExercise =
+          (\exs i -> fromMaybe emptyExercise (exs !! i))
+            <$> exercises <*> currentIndex
+
+    -- Fires once per keystroke (keystrokeState) and once per chunk advance
+    -- (currentExercise). The three stat text nodes are the only subscribers.
+    let statsDisplay =
+          ( \ex ks ->
+              let total    = Array.length ex.chars
+                  accuracy = if ks.stats.totalTyped == 0 then 100.0
+                             else   toNumber ks.stats.correctCount
+                                  / toNumber ks.stats.totalTyped
                                   * 100.0
-            in { progress, accuracy, wpm: ks.wpm }
-        )
-          <$> currentExercise
-          <*> keystrokeState
+                  progress = if total == 0 then 0.0
+                             else min 100.0
+                                  $   toNumber ks.stats.totalTyped
+                                    / toNumber total
+                                    * 100.0
+              in { progress, accuracy, wpm: ks.wpm }
+          ) <$> currentExercise <*> keystrokeState
 
-  -- Advance to the next chunk, wrapping at the end.
-  let advanceChunk :: Effect Unit
-      advanceChunk = do
-        idx <- liftST currentIndexRef
-        exs <- liftST exercisesRef
-        let newIdx = if idx >= (Array.length exs - 1) then 0 else idx + 1
-        setKS initialKS
-        setStatusMsg ""
-        setCurrentIndex newIdx
-        void $ setTimeout 50 $ focusElementById "typing-input"
+    let containerClass =
+          (\dark -> "typing-trainer-container" <> if dark then " dark" else " light")
+            <$> darkTheme
 
-  -- Reset the current chunk without advancing.
-  let resetChunk :: Effect Unit
-      resetChunk = do
-        setKS initialKS
-        setStatusMsg ""
-        focusElementById "typing-input"
+    --------------------------------------------------------------------------
+    -- Actions
+    --------------------------------------------------------------------------
 
-  -- Keystroke handler: the hot path.
-  -- All reads are from ST refs (no subscriptions).
-  -- All expensive work (stats, WPM) is O(1).
-  -- A single setKS call emits one Poll propagation.
-  let handleKeyPress :: KeyboardEvent -> Effect Unit
-      handleKeyPress keyEvent = do
-        ks  <- liftST currentKSRef
-        idx <- liftST currentIndexRef
-        exs <- liftST exercisesRef
+    let advanceChunk :: Effect Unit
+        advanceChunk = do
+          idx <- liftST currentIndexRef
+          exs <- liftST exercisesRef
+          let newIdx = if idx >= (Array.length exs - 1) then 0 else idx + 1
+          setKS initialKS
+          setStatusMsg ""
+          setCompletion Nothing
+          setCurrentIndex newIdx
+          void $ setTimeout 50 focusInput
 
-        let ex          = fromMaybe emptyExercise (exs !! idx)
-            targetChars = ex.chars            -- pre-computed Array Char, no allocation
-            oldTyped    = ks.typed
-            oldLen      = CU.length oldTyped
-            targetLen   = Array.length targetChars
-            keyPressed  = key keyEvent
-            keyCode     = code keyEvent
+    let resetChunk :: Effect Unit
+        resetChunk = do
+          mTimer <- Ref.read typingTimerRef
+          case mTimer of
+            Just tid -> clearTimeout tid
+            Nothing  -> pure unit
+          Ref.write Nothing typingTimerRef
+          setKS initialKS
+          setStatusMsg ""
+          setCompletion Nothing
+          focusInput
 
-        let newTyped
-              -- Backspace: guard against negative take
-              | keyCode == "Backspace"    = if oldLen > 0
+    --------------------------------------------------------------------------
+    -- Keystroke handler: the hot path
+    --
+    -- All state reads use ST refs (no subscriptions, no reactive side-effects).
+    -- All expensive work (stats, WPM) is O(1).
+    -- One setKS call emits one Poll propagation covering all downstream work.
+    --
+    -- When the results screen is visible, Enter/Space advance the chunk;
+    -- all other keys are suppressed so the hidden textarea stays clean.
+    --
+    -- isComposing guard drops IME composition events (Japanese, Chinese, Korean,
+    -- Mac dead-key sequences) before they reach the input logic.
+    --------------------------------------------------------------------------
+
+    let handleKeyPress :: KeyboardEvent -> Effect Unit
+        handleKeyPress keyEvent =
+          when (not (isComposing keyEvent)) do
+            mComp <- liftST completionRef
+            if isJust mComp
+            then do
+              -- Results screen is active: only Enter/Space advance.
+              let kc = code keyEvent
+              when (kc == "Enter" || kc == "Space") advanceChunk
+            else do
+              ks  <- liftST currentKSRef
+              idx <- liftST currentIndexRef
+              exs <- liftST exercisesRef
+
+              let ex        = fromMaybe emptyExercise (exs !! idx)
+                  targetLen = Array.length ex.chars
+                  oldTyped  = ks.typed
+                  oldLen    = CU.length oldTyped
+                  kp        = key keyEvent
+                  kc        = code keyEvent
+
+              let newTyped
+                    | kc == "Backspace"   = if oldLen > 0
                                             then CU.take (oldLen - 1) oldTyped
                                             else ""
-              -- Block input once chunk is fully typed
-              | oldLen >= targetLen       = oldTyped
-              -- Space key returns a literal space character
-              | keyCode == "Space"        = oldTyped <> " "
-              -- Single printable character
-              | CU.length keyPressed == 1 = oldTyped <> keyPressed
-              | otherwise                 = oldTyped
+                    | oldLen >= targetLen = oldTyped
+                    | kc == "Space"       = oldTyped <> " "
+                    | CU.length kp == 1  = oldTyped <> kp
+                    | otherwise           = oldTyped
 
-        -- Start the WPM clock on first character; preserve it afterward.
-        newStart <- case ks.startTime of
-          Just t  -> pure (Just t)
-          Nothing ->
-            if CU.length newTyped > 0
-            then Just <$> now
-            else pure Nothing
+              -- Start clock on first character; preserve it afterward.
+              newStart <- case ks.startTime of
+                Just t  -> pure (Just t)
+                Nothing ->
+                  if CU.length newTyped > 0 then Just <$> now
+                  else pure Nothing
 
-        -- Live WPM. Suppressed for first 0.5s to avoid the initial spike
-        -- when a single word has been typed and elapsed time is near zero.
-        newWpm <- case newStart of
-          Nothing -> pure 0.0
-          Just startT -> do
-            t <- now
-            let (Seconds secs) = diff t startT :: Seconds
-                -- Standard definition: 5 code units = 1 "word"
-                wordsTyped      = toNumber (CU.length newTyped) / 5.0
-            pure $ if secs > 0.5 then wordsTyped / (secs / 60.0) else 0.0
+              currentTime <- now
 
-        -- O(1) delta stats: examine only the character that changed.
-        let newStats = updateStats ks.stats oldTyped newTyped targetChars
+              -- Append to timestamp buffer only on character addition.
+              let newTimestamps =
+                    if CU.length newTyped > oldLen
+                    then Array.take 60 $ Array.cons currentTime ks.keyTimestamps
+                    else ks.keyTimestamps
 
-        -- Single Poll fire. All three fields (typed, wpm, startTime) propagate
-        -- together. statsDisplay and typedPoll each fire exactly once.
-        setKS { typed: newTyped, wpm: newWpm, startTime: newStart, stats: newStats }
+              let newStats = updateStats ks.stats oldTyped newTyped ex.chars
+              let newWpm   = rollingWpm newTimestamps currentTime
 
-        -- Auto-advance on exact completion (string equality over ≤300 chars).
-        when (targetLen > 0 && newTyped == ex.text) do
-          setStatusMsg "\x2713 Complete!"
-          void $ setTimeout 350 advanceChunk
+              -- Caret idle management:
+              -- Cancel the pending false-setting timer (if any), reschedule it.
+              -- isTyping stays true as long as keystrokes keep arriving within
+              -- 500ms of each other. Goes false exactly once per idle period.
+              mPrev <- Ref.read typingTimerRef
+              case mPrev of
+                Just tid -> clearTimeout tid
+                Nothing  -> pure unit
+              tid <- setTimeout 500 do
+                ks2 <- liftST currentKSRef
+                setKS (ks2 { isTyping = false })
+                Ref.write Nothing typingTimerRef
+              Ref.write (Just tid) typingTimerRef
 
-  ---- DOM -----------------------------------------------------------------------
-  --
-  -- Static structure principle: every node that never needs to be replaced
-  -- uses DA.klass_ or text_. Only text children of stat spans and DA.klass
-  -- on character spans carry reactive subscriptions. <#~> appears exactly
-  -- once, guarded by currentExercise (fires only on chunk advance).
+              -- Single Poll fire: all 300 DA.klass subs + 3 stat text nodes.
+              setKS
+                { typed:         newTyped
+                , wpm:           newWpm
+                , startTime:     newStart
+                , stats:         newStats
+                , keyTimestamps: newTimestamps
+                , isTyping:      true
+                }
 
-  D.div [ DA.klass_ "typing-trainer-container" ]
-    [
-    -- Header
-      D.div [ DA.klass_ "header" ]
-        [ D.h1 [ DA.klass_ "app-title" ] [ text_ "Typing Trainer" ] ]
+              -- Completion: record result, show overlay. Do NOT auto-advance;
+              -- the results screen requires deliberate user action to dismiss.
+              when (targetLen > 0 && newTyped == ex.text) do
+                t <- now
+                let elapsed = case newStart of
+                      Nothing -> 0.0
+                      Just st -> let (Seconds s) = diff t st :: Seconds in s
+                    finalAcc =
+                      if newStats.totalTyped == 0 then 100.0
+                      else   toNumber newStats.correctCount
+                           / toNumber newStats.totalTyped
+                           * 100.0
+                setCompletion $ Just
+                  { wpm:         newWpm
+                  , accuracy:    finalAcc
+                  , timeSecs:    elapsed
+                  , errors:      newStats.incorrectCount
+                  , chunkNum:    idx + 1
+                  , totalChunks: Array.length exs
+                  }
 
-    -- Stats bar: three static spans, each with one reactive text child.
-    -- Per-keystroke cost: three textNode.data writes via statsDisplay.
-    , D.div [ DA.klass_ "stats-bar" ]
-        [ D.span [ DA.klass_ "stat" ]
-            [ text $ (\s -> "Progress: " <> showRounded s.progress <> "%") <$> statsDisplay ]
-        , D.span [ DA.klass_ "stat-divider" ] [ text_ " | " ]
-        , D.span [ DA.klass_ "stat" ]
-            [ text $ (\s -> "Accuracy: " <> showRounded s.accuracy <> "%") <$> statsDisplay ]
-        , D.span [ DA.klass_ "stat-divider" ] [ text_ " | " ]
-        , D.span [ DA.klass_ "stat" ]
-            [ text $ (\s -> "WPM: " <> showRounded s.wpm) <$> statsDisplay ]
-        ]
+    --------------------------------------------------------------------------
+    -- DOM
+    --
+    -- Static structure principle: every node that never changes uses DA.klass_
+    -- or text_. Reactive subscriptions exist only where values actually change.
+    -- <#~> appears twice: once for chunk advance, once for overlay toggle.
+    --------------------------------------------------------------------------
 
-    -- Chunk metadata: description, page counter, completion flash.
-    -- These fire only on chunk advance or load, not during typing.
-    , D.div [ DA.klass_ "exercise-header" ]
-        [ D.span [ DA.klass_ "exercise-description" ]
-            [ text $ _.description <$> currentExercise ]
-        , D.span [ DA.klass_ "page-indicator" ]
-            [ text $
-                (\exs i -> "  [" <> show (i + 1) <> " / " <> show (Array.length exs) <> "]")
-                  <$> exercises
-                  <*> currentIndex
-            ]
-        , D.span [ DA.klass_ "status-msg" ] [ text statusMsg ]
-        ]
+    D.div [ DA.klass containerClass ]
 
-    -- Text display.
-    -- <#~> fires ONLY when the chunk changes (chunk advance or load).
-    -- During typing, only DA.klass attributes fire via typedPoll.
-    -- Per-keystroke cost: N className writes batched by the browser into
-    -- a single layout pass. Zero node allocations or removals.
-    , D.div [ DA.klass_ "text-display" ]
-        [ currentExercise <#~> \ex ->
-            D.div [ DA.klass_ "text-content" ]
-              (renderChunk ex.chars typedPoll)
-        ]
+      [ -- Header: title + theme toggle
+        D.div [ DA.klass_ "header" ]
+          [ D.h1 [ DA.klass_ "app-title" ] [ text_ "Typing Trainer" ]
+          , D.button
+              [ DA.klass_ "btn-theme"
+              , DL.click_ $ const do
+                  d <- liftST darkThemeRef
+                  setDarkTheme (not d)
+                  focusInput
+              ]
+              [ text $ (\d -> if d then "Light Mode" else "Dark Mode") <$> darkTheme ]
+          ]
 
-    -- Off-screen textarea: sole mechanism for capturing keystrokes.
-    -- position:fixed removes it from document flow entirely.
-    -- pointer-events:none prevents accidental focus loss on click.
-    -- Spellcheck, autocomplete, and autocorrect suppressed to eliminate
-    -- browser composition events and underline reflow passes.
-    , D.textarea
-        [ DA.klass_ "hidden-input"
-        , DA.id_ "typing-input"
-        , DA.style_
-            ( "position:fixed;left:-9999px;width:1px;height:1px;"
-            <> "opacity:0;pointer-events:none;"
-            )
-        , DA.autofocus_ "autofocus"
-        , DL.keydown_ handleKeyPress
-        ]
-        []
+      -- Stats bar: three static spans, each with one reactive text child.
+      -- Per-keystroke cost: three textNode.data writes via statsDisplay.
+      , D.div [ DA.klass_ "stats-bar" ]
+          [ D.span [ DA.klass_ "stat" ]
+              [ text $ (\s -> "Progress: " <> showRounded s.progress <> "%") <$> statsDisplay ]
+          , D.span [ DA.klass_ "stat-divider" ] [ text_ " | " ]
+          , D.span [ DA.klass_ "stat" ]
+              [ text $ (\s -> "Accuracy: " <> showRounded s.accuracy <> "%") <$> statsDisplay ]
+          , D.span [ DA.klass_ "stat-divider" ] [ text_ " | " ]
+          , D.span [ DA.klass_ "stat" ]
+              [ text $ (\s -> "WPM: " <> showRounded s.wpm) <$> statsDisplay ]
+          ]
 
-    -- Controls
-    , D.div [ DA.klass_ "controls" ]
-        [ D.button
-            [ DA.klass_ "btn btn-secondary"
-            , DL.click_ $ const resetChunk
-            ]
-            [ text_ "Reset" ]
+      -- Exercise metadata: description + page counter + status flash.
+      -- Fires only on chunk advance or load, never during typing.
+      , D.div [ DA.klass_ "exercise-header" ]
+          [ D.span [ DA.klass_ "exercise-description" ]
+              [ text $ _.description <$> currentExercise ]
+          , D.span [ DA.klass_ "page-indicator" ]
+              [ text $
+                  (\exs i -> " [" <> show (i + 1) <> "/" <> show (Array.length exs) <> "]")
+                    <$> exercises <*> currentIndex
+              ]
+          , D.span [ DA.klass_ "status-msg" ] [ text statusMsg ]
+          ]
 
-        , D.button
-            [ DA.klass_ "btn btn-primary"
-            , DL.click_ $ const advanceChunk
-            ]
-            [ text_ "Next Chunk" ]
+      -- Text display.
+      -- <#~> fires ONLY when chunk changes (advance or load).
+      -- During typing: N className writes, zero node allocations.
+      , D.div [ DA.klass_ "text-display" ]
+          [ currentExercise <#~> \ex ->
+              D.div [ DA.klass_ "text-content" ]
+                (renderChunk ex.chars ex.charStrings keystrokeState)
+          ]
 
-        , D.button
-            [ DA.klass_ "btn btn-load"
-            , DL.click_ $ const $ launchAff_ do
-                result <- loadTextFile "books/TheDispossessed_LeGuin.txt"
-                liftEffect $ case result of
-                  Left _ ->
-                    setStatusMsg "Error: could not load book."
-                  Right content -> do
-                    let chunks = chunkText 300 content
-                    if Array.length chunks > 0
-                    then do
-                      setExercises chunks
-                      setCurrentIndex 0
-                      setKS initialKS
-                      setStatusMsg
-                        $ "Loaded " <> show (Array.length chunks) <> " chunks."
-                      void $ setTimeout 2000 (setStatusMsg "")
-                    else
-                      setStatusMsg "Error: no content found in file."
-            ]
-            [ text_ "Load Book" ]
-        ]
-    ]
+      -- Results overlay.
+      -- position: fixed in CSS; appears over everything when completion is set.
+      -- <#~> fires once on completion, once on dismissal.
+      -- Enter/Space on hidden textarea also dismisses (handled in handleKeyPress).
+      , completion <#~> case _ of
+          Nothing -> D.div [ DA.klass_ "results-hidden" ] []
+          Just r  ->
+            D.div [ DA.klass_ "results-overlay" ]
+              [ D.div [ DA.klass_ "results-card" ]
+                  [ D.h2 [ DA.klass_ "results-title" ]
+                      [ text_ "\x2713 Chunk Complete" ]
+                  , D.div [ DA.klass_ "results-grid" ]
+                      [ resultStat "WPM"      (showRounded r.wpm)
+                      , resultStat "Accuracy" (showRounded r.accuracy <> "%")
+                      , resultStat "Time"     (showRounded r.timeSecs <> "s")
+                      , resultStat "Errors"   (show r.errors)
+                      ]
+                  , D.p [ DA.klass_ "results-progress" ]
+                      [ text_ $ "Chunk " <> show r.chunkNum
+                             <> " of "   <> show r.totalChunks
+                      ]
+                  , D.p [ DA.klass_ "results-hint" ]
+                      [ text_ "Press Enter, Space, or click Continue" ]
+                  , D.button
+                      [ DA.klass_ "btn btn-primary results-continue"
+                      , DL.click_ $ const advanceChunk
+                      ]
+                      [ text_ "Continue \x2192" ]
+                  ]
+              ]
+
+      -- Off-screen textarea: sole keystroke capture mechanism.
+      -- pointer-events: none prevents accidental focus steal on click.
+      , D.textarea
+          [ DA.klass_ "hidden-input"
+          , DA.id_ "typing-input"
+          , DA.style_
+              ( "position:fixed;left:-9999px;width:1px;height:1px;"
+             <> "opacity:0;pointer-events:none;"
+              )
+          , DA.autofocus_ "autofocus"
+          , DL.keydown_ handleKeyPress
+          ]
+          []
+
+      -- Controls
+      , D.div [ DA.klass_ "controls" ]
+          [ D.button
+              [ DA.klass_ "btn btn-secondary"
+              , DL.click_ $ const resetChunk
+              ]
+              [ text_ "Reset" ]
+
+          , D.button
+              [ DA.klass_ "btn btn-primary"
+              , DL.click_ $ const advanceChunk
+              ]
+              [ text_ "Next" ]
+
+          , D.button
+              [ DA.klass_ "btn btn-load"
+              , DL.click_ $ const $ launchAff_ do
+                  result <- loadTextFile "books/TheDispossessed_LeGuin.txt"
+                  liftEffect $ case result of
+                    Left _        -> setStatusMsg "Error: could not load book."
+                    Right content -> do
+                      cs <- liftST chunkSizeRef
+                      let chunks = chunkText cs content
+                      if Array.length chunks > 0
+                      then do
+                        setExercises chunks
+                        setCurrentIndex 0
+                        setKS initialKS
+                        setCompletion Nothing
+                        setStatusMsg
+                          $ "Loaded " <> show (Array.length chunks) <> " chunks."
+                        void $ setTimeout 2000 (setStatusMsg "")
+                      else
+                        setStatusMsg "Error: no content found."
+              ]
+              [ text_ "Load Book" ]
+
+          -- Chunk size selector: applies on next book load.
+          , D.div [ DA.klass_ "chunk-size-group" ]
+              [ D.span [ DA.klass_ "chunk-size-label" ] [ text_ "Size:" ]
+              , chunkSizeBtn 150 setChunkSize chunkSizeState
+              , chunkSizeBtn 300 setChunkSize chunkSizeState
+              , chunkSizeBtn 500 setChunkSize chunkSizeState
+              ]
+          ]
+      ]
