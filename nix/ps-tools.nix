@@ -77,7 +77,7 @@ let
         cleanup_port "$VITE_PORT"
       fi
 
-      exec node_modules/.bin/vite --port "$VITE_PORT" --host --open
+      exec node_modules/.bin/vite --port "$VITE_PORT" --open
     '';
   };
 

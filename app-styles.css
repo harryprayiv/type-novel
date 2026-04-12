@@ -1,12 +1,21 @@
-/* Full viewport styling */
+/* ============================================================
+   Reset & viewport
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
   overflow: hidden;
+  background-color: #000;
 }
 
-/* Main container - full screen, flex layout */
+/* ============================================================
+   Root container
+   ============================================================ */
 .typing-trainer-container {
   display: flex;
   flex-direction: column;
@@ -14,69 +23,143 @@ html, body {
   max-width: 90vw;
   height: 100vh;
   margin: 0 auto;
-  padding: 15px;
-  box-sizing: border-box;
-  background-color: #000000;
-  font-family: 'Arial', sans-serif;
+  padding: 16px 20px;
+  background-color: #000;
+  font-family: 'Courier New', Courier, monospace;
+  color: #fff;
   overflow: hidden;
 }
 
-/* Flexible layout for sections */
-.load-book-section {
+/* ============================================================
+   Header
+   ============================================================ */
+.header {
   display: flex;
+  align-items: center;
   justify-content: center;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #333;
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
-.stats {
+.app-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #888;
+}
+
+/* ============================================================
+   Stats bar
+   Three static spans; only their text children are reactive.
+   ============================================================ */
+.stats-bar {
   display: flex;
   justify-content: flex-end;
-  background-color: #000000;
-  padding: 10px;
-  margin-bottom: 10px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+  font-size: 0.82rem;
+  color: #aaa;
+  letter-spacing: 0.04em;
 }
 
-.text-display {
-  flex-grow: 1;
-  background-color: rgb(0, 0, 0);
-  border-radius: 5px;
-  padding: 15px;
+.stat {
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-divider {
+  color: #444;
+  user-select: none;
+}
+
+/* ============================================================
+   Exercise header row
+   ============================================================ */
+.exercise-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin-bottom: 10px;
-  font-size: 20px;
-  line-height: 1.6;
-  border: 1px solid #ddd;
-  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
-  overflow-y: auto;
-  /* Ensures text doesn't overflow */
-  word-wrap: break-word;
-  white-space: pre-wrap;
+  flex-shrink: 0;
+  font-size: 0.8rem;
 }
 
 .exercise-description {
-  text-align: center;
   font-style: italic;
+  color: #666;
+}
+
+.page-indicator {
+  color: #444;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-msg {
+  margin-left: auto;
+  color: #2c8e41;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  transition: opacity 0.2s ease;
+}
+
+/* ============================================================
+   Text display
+   flex-grow: 1 consumes all remaining vertical space so the
+   controls stay pinned to the bottom regardless of chunk length.
+   ============================================================ */
+.text-display {
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
   margin-bottom: 10px;
+  border: 1px solid #222;
+  border-radius: 4px;
+  background-color: #0a0a0a;
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.6);
+  /* Scrollbar: subtle dark style */
+  scrollbar-width: thin;
+  scrollbar-color: #333 #0a0a0a;
 }
 
-.progress-indicator {
-  text-align: center;
-  margin-bottom: 10px;
+.text-display::-webkit-scrollbar {
+  width: 6px;
 }
 
-.controls {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 15px;
-  padding: 10px;
-  background-color: #000000;
-  border-top: 1px solid #666666;
-  width: 100%;
+.text-display::-webkit-scrollbar-track {
+  background: #0a0a0a;
 }
 
-/* Character styling */
+.text-display::-webkit-scrollbar-thumb {
+  background-color: #333;
+  border-radius: 3px;
+}
+
+.text-content {
+  font-size: 1.25rem;
+  line-height: 1.75;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* ============================================================
+   Character spans
+   Base .char keeps display inline and prevents layout thrash
+   when className flips between the three states.
+   ============================================================ */
+.char {
+  display: inline;
+  transition: color 0.04s linear;
+}
+
 .char-not-typed {
-  color: #ffffff;
+  color: #555;
 }
 
 .char-correct {
@@ -86,48 +169,79 @@ html, body {
 .char-incorrect {
   color: #c14135;
   text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
-/* Buttons */
-.load-book-btn,
-.reset-btn,
-.next-btn {
-  padding: 8px 15px;
+.char-cursor {
+  color: #fff;
+  border-bottom: 2px solid #fff;
+}
+
+/* ============================================================
+   Controls
+   ============================================================ */
+.controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 4px;
+  border-top: 1px solid #222;
+  flex-shrink: 0;
+}
+
+/* ============================================================
+   Buttons
+   Shared base via .btn; variants override background only.
+   ============================================================ */
+.btn {
+  padding: 7px 18px;
   border: none;
-  border-radius: 5px;
-  font-size: 14px;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  font-family: inherit;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   cursor: pointer;
-  transition: background-color 0.3s;
+  transition: background-color 0.15s ease, transform 0.08s ease;
+  color: #fff;
+  user-select: none;
 }
 
-.load-book-btn {
-  background-color: #27ae60;
-  color: white;
+.btn:active {
+  transform: translateY(1px);
 }
 
-.load-book-btn:hover {
-  background-color: #219a52;
+.btn-secondary {
+  background-color: #8b2e26;
 }
 
-.reset-btn {
-  background-color: #e74c3c;
-  color: white;
+.btn-secondary:hover {
+  background-color: #a83530;
 }
 
-.reset-btn:hover {
-  background-color: #c0392b;
+.btn-primary {
+  background-color: #1e6fa8;
 }
 
-.next-btn {
-  background-color: #3498db;
-  color: white;
+.btn-primary:hover {
+  background-color: #2580bf;
 }
 
-.next-btn:hover {
-  background-color: #2980b9;
+.btn-load {
+  background-color: #1e7a40;
 }
 
-/* Hidden input - positioned fixed completely out of view */
+.btn-load:hover {
+  background-color: #239149;
+}
+
+/* ============================================================
+   Hidden input
+   position:fixed removes it from document flow entirely.
+   pointer-events:none prevents accidental focus steal on click.
+   ============================================================ */
 .hidden-input {
   position: fixed;
   left: -9999px;
@@ -137,33 +251,38 @@ html, body {
   border: none;
   margin: 0;
   padding: 0;
+  pointer-events: none;
 }
 
 .hidden-input:focus {
   outline: none;
 }
 
-/* Responsive adjustments */
+/* ============================================================
+   Responsive
+   ============================================================ */
 @media (max-width: 600px) {
   .typing-trainer-container {
-    padding: 10px;
+    max-width: 100vw;
+    padding: 10px 12px;
   }
-  
-  .text-display {
-    font-size: 16px;
-    padding: 10px;
+
+  .text-content {
+    font-size: 1rem;
   }
-  
+
   .controls {
-    flex-direction: column;
-    gap: 10px;
-    padding: 5px;
+    flex-wrap: wrap;
+    gap: 8px;
   }
-  
-  .load-book-btn,
-  .reset-btn,
-  .next-btn {
-    padding: 6px 12px;
-    font-size: 12px;
+
+  .btn {
+    padding: 6px 14px;
+    font-size: 0.76rem;
+  }
+
+  .stats-bar {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 }

@@ -72,8 +72,8 @@ let
     nativeBuildInputs = [ pkgs.pkg-config ];
 
     shellHook = ''
-      if [ ! -d node_modules ]; then
-        echo "node_modules not found — running npm install to get vite..."
+      if [ ! -x node_modules/.bin/vite ]; then
+        echo "vite not found in node_modules — running npm install..."
         npm install
       fi
 
