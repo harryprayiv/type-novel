@@ -10,7 +10,6 @@ module Main
 
 import Prelude
 
-import Affjax (Error)
 import Affjax.ResponseFormat as ResponseFormat
 import Affjax.Web as AX
 import Control.Monad.ST.Class (liftST)
@@ -24,6 +23,7 @@ import Data.String (Pattern(..), Replacement(..))
 import Data.String as String
 import Data.String.CodeUnits as CU
 import Data.Time.Duration (Seconds(..))
+import Data.Tuple.Nested ((/\))
 import Deku.Control (text, text_)
 import Deku.Core (Nut, useRefST)
 import Deku.DOM as D
@@ -39,7 +39,6 @@ import Effect.Now (now)
 import Effect.Ref as Ref
 import Effect.Timer (TimeoutId, clearTimeout, setTimeout)
 import FRP.Poll (Poll)
-import Data.Tuple.Nested ((/\))
 import Web.DOM.ParentNode (QuerySelector(..), querySelector)
 import Web.HTML (window)
 import Web.HTML.HTMLDocument (toParentNode)
@@ -282,6 +281,13 @@ charResult i targetChar typed =
       Nothing -> NotTyped
       Just c  -> if c == targetChar then Correct else Incorrect
 
+displayChar :: Int -> Char -> KeystrokeState -> String
+displayChar i targetChar ks =
+  case charResult i targetChar ks.typed of
+    Incorrect -> fromMaybe (CU.singleton targetChar)
+                   (CU.singleton <$> CU.charAt i ks.typed)
+    _         -> CU.singleton targetChar
+
 charClassKS :: Int -> Char -> KeystrokeState -> String
 charClassKS i c ks =
   case charResult i c ks.typed of
@@ -290,13 +296,13 @@ charClassKS i c ks =
     Incorrect -> "char char-incorrect"
     Cursor    -> "char char-cursor" <> if ks.isTyping then " typing" else ""
 
-renderChunk :: Array Char -> Array String -> Poll KeystrokeState -> Array Nut
-renderChunk targetChars charStrings ksPoll =
+renderChunk :: Array Char -> Poll KeystrokeState -> Array Nut
+renderChunk targetChars ksPoll =
   mapWithIndex
     ( \i c ->
         D.span
           [ DA.klass $ charClassKS i c <$> ksPoll ]
-          [ text_ (fromMaybe (CU.singleton c) (charStrings !! i)) ]
+          [ text $ displayChar i c <$> ksPoll ]
     )
     targetChars
 
@@ -317,8 +323,24 @@ focusInput = do
 showRounded :: Number -> String
 showRounded n = show (toNumber (floor (n * 10.0)) / 10.0)
 
-loadTextFile :: String -> Aff (Either Error String)
-loadTextFile path = map (map _.body) $ AX.get ResponseFormat.string path
+loadTextFile :: String -> Aff (Either String String)
+loadTextFile filename = do
+  result <- AX.get ResponseFormat.string ("/books/" <> filename)
+  pure $ case result of
+    Left err ->
+      Left (AX.printError err)
+    Right resp ->
+      -- Vite with appType:"mpa" returns 404 for missing files, so Affjax
+      -- gives us Left on a missing file. If you ever see this branch fire,
+      -- it means the SPA fallback is still active somewhere.
+      let body = resp.body
+      in if String.take 15 body == "<!DOCTYPE html>"
+            || String.take 5 body == "<html"
+         then Left
+                $ "Got HTML instead of text. "
+               <> "Check that public/books/" <> filename
+               <> " exists and vite.config.js has appType: \"mpa\"."
+         else Right body
 
 -- Static stat cell for the results card. Pure Nut, no reactive subscriptions.
 resultStat :: String -> String -> Nut
@@ -595,7 +617,7 @@ main = do
       , D.div [ DA.klass_ "text-display" ]
           [ currentExercise <#~> \ex ->
               D.div [ DA.klass_ "text-content" ]
-                (renderChunk ex.chars ex.charStrings keystrokeState)
+                (renderChunk ex.chars keystrokeState)
           ]
 
       -- Results overlay.
@@ -660,9 +682,10 @@ main = do
           , D.button
               [ DA.klass_ "btn btn-load"
               , DL.click_ $ const $ launchAff_ do
-                  result <- loadTextFile "books/TheDispossessed_LeGuin.txt"
+                  result <- loadTextFile "LeGuin_TheDispossessed.txt"
                   liftEffect $ case result of
-                    Left _        -> setStatusMsg "Error: could not load book."
+                    Left err ->
+                      setStatusMsg $ "Error: " <> err
                     Right content -> do
                       cs <- liftST chunkSizeRef
                       let chunks = chunkText cs content
@@ -675,8 +698,9 @@ main = do
                         setStatusMsg
                           $ "Loaded " <> show (Array.length chunks) <> " chunks."
                         void $ setTimeout 2000 (setStatusMsg "")
+                        focusInput
                       else
-                        setStatusMsg "Error: no content found."
+                        setStatusMsg "Error: file was empty after cleaning."
               ]
               [ text_ "Load Book" ]
 

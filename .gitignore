@@ -42,3 +42,4 @@ cabal.project.local~
 .postgres
 .preview
 *.code-workspace
+public/books/*
