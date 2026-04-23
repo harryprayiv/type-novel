@@ -23,6 +23,7 @@
             "tuples",
             "web-file",
             "web-html",
+            "web-storage",
             "yoga-json"
           ]
         },

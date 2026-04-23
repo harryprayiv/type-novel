@@ -1,0 +1,220 @@
+# type-novel
+
+A fast, minimal typing trainer for reading novels one chunk at a time.
+Built in PureScript with Deku, served by Vite. No backend required.
+
+---
+
+## What It Is
+
+Most typing trainers give you pangrams and random word lists. This one
+lets you type actual books — the text you've been meaning to read anyway.
+Drop a `.txt` file in `public/books/`, click Load, and start typing.
+Progress through the entire novel one 300-character chunk at a time.
+
+---
+
+## Stack
+
+| Layer      | Technology                              |
+|------------|-----------------------------------------|
+| Language   | PureScript                              |
+| UI         | Deku (push-based FRP, no virtual DOM)   |
+| HTTP       | Affjax                                  |
+| Dev server | Vite (`appType: "mpa"`)                 |
+| Build      | Spago + esbuild                         |
+| Nix        | Flake-based dev environment             |
+
+No React. No TypeScript. No Node runtime in production. The compiled
+output is a single JS bundle served as a static file.
+
+---
+
+## Performance Architecture
+
+The central design constraint is that **no DOM nodes are created or
+destroyed during typing** — only CSS class attributes are written.
+
+```
+keystroke
+  → handleKeyPress (Effect, all reads from STRef — no Poll subscriptions)
+  → setKS (single Poll fire)
+      → N × DA.klass writes    (charClassKS per character span)
+      → N × text node writes   (displayChar per character span)
+      → 3 × text node writes   (stats bar)
+  → browser batches into one layout pass
+```
+
+Key decisions:
+
+- **Single `KeystrokeState` atom** — one `setKS` call per keystroke, one
+  Poll propagation, no multiplied fan-out from separate setters.
+
+- **`<#~>` used twice only** — once on chunk advance (replaces character
+  spans), once on completion overlay toggle. Never on keystrokes.
+
+- **`Data.String.CodeUnits` throughout** — `CU.charAt` is O(1) direct
+  code-unit indexing. `cleanText` guarantees ASCII output so code-unit
+  index equals code-point index. `CodePoints.codePointAt` would be O(i)
+  per call and is never used in the hot path.
+
+- **Delta stats** — `updateStats` examines exactly one character position
+  per keystroke (the added or removed position) rather than scanning the
+  full typed string. Accuracy is O(1).
+
+- **`Array Char` pre-computed at load time** — character arrays are
+  computed once in `mkExercise`/`chunkText` and stored on the exercise
+  record. No allocation in the keystroke handler.
+
+- **Rolling 10-second WPM** — newest-first ring buffer capped at 60
+  entries. `Array.filter` over at most 60 elements per keystroke.
+  Eliminates the spike-to-infinity that raw elapsed-time WPM produces.
+
+- **Caret idle timer** — `isTyping` is set true on every keystroke and
+  false exactly once, 500ms after the last keystroke, via a
+  cancel-and-reschedule pattern using `Effect.Ref` for the `TimeoutId`.
+  The CSS blink animation is suppressed while `isTyping` is true.
+
+---
+
+## Project Structure
+
+```
+type-novel/
+├── public/
+│   └── books/              ← drop .txt files here
+│       └── MyBook.txt
+├── src/
+│   └── Main.purs           ← entire application, single module
+├── index.html
+├── style.css
+├── vite.config.js
+├── spago.yaml
+├── flake.nix
+└── package.json
+```
+
+---
+
+## Getting Started
+
+### With Nix
+
+```bash
+nix develop
+spago build
+npx vite
+```
+
+### Without Nix
+
+```bash
+npm install
+spago build
+npx vite
+```
+
+Open `http://localhost:5173` in any modern browser.
+
+### Adding a Book
+
+```bash
+cp ~/path/to/my-novel.txt public/books/
+
+# Add one entry to availableBooks in Main.purs:
+# , { file: "my-novel.txt", label: "My Novel" }
+
+spago build
+```
+
+The `cleanText` pipeline normalises smart quotes, em dashes, ellipses,
+and all non-printable characters automatically. `.txt` files from
+Project Gutenberg work without any preprocessing.
+
+---
+
+## Controls
+
+| Action        | How                                                     |
+|---------------|---------------------------------------------------------|
+| Type          | Just type — the hidden textarea captures all keystrokes |
+| Backspace     | Removes the last character                              |
+| Reset chunk   | Reset button                                            |
+| Next chunk    | Next button, or Enter/Space on the results screen       |
+| Change size   | 150 / 300 / 500 buttons (applies on next load)          |
+| Toggle theme  | Light Mode / Dark Mode button                           |
+
+---
+
+## Chunk Sizes
+
+| Size | Approx. chunks for a novel | Feel                                 |
+|------|----------------------------|--------------------------------------|
+| 150  | ~4600                      | Short bursts, quick wins             |
+| 300  | ~2300                      | Default, good flow state             |
+| 500  | ~1400                      | Longer sessions, fewer interruptions |
+
+Select the size before clicking Load Book. It applies to the chunking
+pass on load and cannot be changed mid-session without reloading.
+
+---
+
+## CSS Themes
+
+Both themes are implemented as CSS custom property scopes on the root
+container. The entire palette switches with one `className` write on the
+container div — no JavaScript loops, no inline style mutations.
+
+```css
+.typing-trainer-container.dark  { --bg: #000; --correct: #3a9e52; ... }
+.typing-trainer-container.light { --bg: #f2efe9; --correct: #1e7a38; ... }
+```
+
+---
+
+## Character States
+
+| Class            | Meaning                | Display                         |
+|------------------|------------------------|---------------------------------|
+| `char-not-typed` | Not yet reached        | Dim                             |
+| `char-cursor`    | Next character to type | Beam caret, blinking when idle  |
+| `char-correct`   | Typed correctly        | Green                           |
+| `char-incorrect` | Typed wrong character  | Red underline, shows typed char |
+
+Incorrect positions show the character the user actually typed rather
+than the target character. Backspace restores the position to untyped.
+
+---
+
+## Vite Configuration
+
+`appType: "mpa"` is required. Without it Vite's SPA fallback returns
+`index.html` for any path that doesn't match a known module, which means
+`fetch("/books/mybook.txt")` silently returns your app HTML instead of
+the file. The `loadTextFile` function includes a guard that detects this
+and returns a readable error message if it happens.
+
+```javascript
+// vite.config.js
+export default defineConfig({
+  appType: "mpa",   // disables SPA catch-all fallback
+});
+```
+---
+
+## License
+
+Copyright (C) 2026 Harry Pray IV
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero
+General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.

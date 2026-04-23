@@ -1,38 +1,40 @@
 import { defineConfig } from "vite";
+import fs from "fs";
+import path from "path";
+
+// Scans public/books/ at dev-server start and on file changes.
+// Writes public/books/manifest.json — a plain JSON array of .txt filenames.
+// Drop a file in public/books/ and the list updates without restarting Vite.
+function bookManifestPlugin() {
+  const booksDir    = path.resolve("public/books");
+  const manifestPath = path.join(booksDir, "manifest.json");
+
+  function writeManifest() {
+    fs.mkdirSync(booksDir, { recursive: true });
+    const files = fs.readdirSync(booksDir)
+      .filter(f => f.toLowerCase().endsWith(".txt"))
+      .sort();
+    fs.writeFileSync(manifestPath, JSON.stringify(files, null, 2));
+    console.log(`[book-manifest] ${files.length} book(s) indexed.`);
+  }
+
+  return {
+    name: "book-manifest",
+    // Runs before the dev server starts serving files.
+    configureServer(server) {
+      writeManifest();
+      // Re-generate when files are added or removed from books/.
+      server.watcher.on("add",   f => { if (f.includes("books")) writeManifest(); });
+      server.watcher.on("unlink",f => { if (f.includes("books")) writeManifest(); });
+    },
+    // Also runs during `vite build`.
+    buildStart() {
+      writeManifest();
+    },
+  };
+}
 
 export default defineConfig({
-  // 'spa' (default) adds a catch-all fallback that returns index.html for
-  // any path that doesn't match a file — which is why your txt loads were
-  // returning HTML. 'mpa' disables that fallback entirely.
-  // Static assets in public/ are served before this setting applies anyway,
-  // but being explicit prevents the same confusion with any future routes.
   appType: "mpa",
-
-  server: {
-    port: 5173,
-    // Return 404 for missing assets rather than falling back to index.html.
-    // With appType: "mpa" this is the default behavior, but stating it
-    // explicitly documents intent.
-    fs: {
-      // Allow serving files from the project root and public/.
-      allow: [".."],
-    },
-  },
-
-  build: {
-    outDir: "dist",
-    // Vite copies public/ to dist/ automatically on build.
-    // No additional config needed for the books directory.
-  },
-
-  // If your PureScript output is compiled to output/ by spago and then
-  // bundled, point Vite at the entry point. Adjust this path to match
-  // whatever your build pipeline produces.
-  // If you're using a separate bundler step (esbuild, parcel), remove this.
-  resolve: {
-    alias: {
-      // Uncomment if your spago output lives somewhere non-standard:
-      // "@output": "/absolute/path/to/output",
-    },
-  },
+  plugins: [bookManifestPlugin()],
 });

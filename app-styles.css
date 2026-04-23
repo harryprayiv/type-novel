@@ -1,6 +1,5 @@
 /* ============================================================
-   Custom properties — scoped to container so both themes can
-   coexist on the same page (e.g., iframes, demos).
+   Custom properties
    ============================================================ */
 
 .typing-trainer-container.dark {
@@ -84,7 +83,7 @@ html, body {
   justify-content: space-between;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   flex-shrink: 0;
 }
 
@@ -98,18 +97,27 @@ html, body {
 }
 
 /* ============================================================
-   Stats bar
+   Stats bar — two rows
+   Row 1: session (fires every keystroke)
+   Row 2: lifetime (fires only on chunk completion)
    ============================================================ */
 
 .stats-bar {
   display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 6px;
+  flex-shrink: 0;
+}
+
+.stats-row {
+  display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 4px;
-  padding: 2px 0 8px;
-  flex-shrink: 0;
-  font-size: 0.78rem;
+  gap: 5px;
+  font-size: 0.76rem;
   letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
 .stat {
@@ -120,6 +128,26 @@ html, body {
 .stat-divider {
   color: var(--text-4);
   user-select: none;
+}
+
+.stat-group-label {
+  font-size: 0.63rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-4);
+  user-select: none;
+  margin-right: 2px;
+}
+
+.lifetime-stat {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-inline {
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ============================================================
@@ -140,11 +168,6 @@ html, body {
   color: var(--text-3);
 }
 
-.page-indicator {
-  color: var(--text-4);
-  font-variant-numeric: tabular-nums;
-}
-
 .status-msg {
   margin-left: auto;
   color: var(--correct);
@@ -154,8 +177,6 @@ html, body {
 
 /* ============================================================
    Text display
-   flex-grow: 1 consumes all remaining vertical space so controls
-   stay pinned to the bottom regardless of chunk length.
    ============================================================ */
 
 .text-display {
@@ -197,9 +218,6 @@ html, body {
   text-decoration-thickness: 1px;
 }
 
-/* Blinking beam caret.
-   step-start = binary on/off, matching standard terminal/editor behavior.
-   margin-left: -1px compensates for the 2px border to prevent layout shift. */
 @keyframes caretBlink {
   0%, 100% { border-left-color: var(--cursor); }
   50%       { border-left-color: transparent; }
@@ -211,8 +229,6 @@ html, body {
   animation: caretBlink 1.06s step-start infinite;
 }
 
-/* Solid caret while the user is actively typing (isTyping = true).
-   Reverts to blinking 500ms after last keystroke. */
 .char-cursor.typing {
   animation: none;
   border-left-color: var(--cursor);
@@ -220,8 +236,6 @@ html, body {
 
 /* ============================================================
    Results overlay
-   position: fixed so it covers the entire viewport including controls,
-   demanding deliberate user action before continuing.
    ============================================================ */
 
 .results-hidden { display: none; }
@@ -355,7 +369,6 @@ html, body {
 .btn-primary   { background: #1a5f96; }
 .btn-load      { background: #1a6e38; }
 
-/* Theme toggle: borderless, uses text color for contrast */
 .btn-theme {
   background: transparent;
   border: 1px solid var(--border-hi);
@@ -376,7 +389,6 @@ html, body {
   color: var(--text-1);
 }
 
-/* Chunk size group */
 .chunk-size-group {
   display: flex;
   align-items: center;
@@ -440,6 +452,54 @@ html, body {
 .hidden-input:focus { outline: none; }
 
 /* ============================================================
+   Book list
+   ============================================================ */
+
+.book-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 8px 0 4px;
+  border-top: 1px dashed var(--border);
+  margin-top: 4px;
+  flex-shrink: 0;
+  max-height: 80px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
+}
+
+.book-list-empty {
+  display: none;
+}
+
+.btn-book {
+  padding: 3px 12px;
+  font-size: 0.70rem;
+  font-family: inherit;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  border-radius: 3px;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+
+.btn-book:hover {
+  border-color: var(--text-1);
+  color: var(--text-1);
+}
+
+.btn-book.active {
+  background: var(--correct);
+  border-color: var(--correct);
+  color: var(--bg);
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 
@@ -482,9 +542,9 @@ html, body {
     justify-content: center;
   }
 
-  .stats-bar {
+  .stats-row {
     flex-wrap: wrap;
     justify-content: flex-start;
-    gap: 2px 4px;
+    gap: 2px 5px;
   }
 }

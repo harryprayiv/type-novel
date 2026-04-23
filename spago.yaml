@@ -3,14 +3,15 @@ package:
   dependencies:
     - affjax
     - affjax-web
-    - node-fs
-    - web-file
     - effect
+    - node-fs
+    - now
     - prelude
     - tuples
+    - web-file
     - web-html
+    - web-storage
     - yoga-json
-    - now
     - deku-core: "*"
     - deku-css: "*"
     - deku-dom: "*"

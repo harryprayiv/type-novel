@@ -132,33 +132,41 @@ chunkTextSpec = describe "chunkText" do
 updateStatsSpec :: Spec Unit
 updateStatsSpec = describe "updateStats" do
 
-  let emptyStats = { correctCount: 0, incorrectCount: 0, totalTyped: 0 }
+  let emptyStats =
+        { correctCount:   0
+        , incorrectCount: 0
+        , totalTyped:     0
+        , totalErrors:    0
+        }
   let target = CU.toCharArray "hello"
 
   it "adding correct char increments correctCount" do
     let s = updateStats emptyStats "" "h" target
-    s.correctCount `shouldEqual` 1
+    s.correctCount   `shouldEqual` 1
     s.incorrectCount `shouldEqual` 0
-    s.totalTyped `shouldEqual` 1
+    s.totalTyped     `shouldEqual` 1
+    s.totalErrors    `shouldEqual` 0
 
-  it "adding incorrect char increments incorrectCount" do
+  it "adding incorrect char increments incorrectCount and totalErrors" do
     let s = updateStats emptyStats "" "x" target
-    s.correctCount `shouldEqual` 0
+    s.correctCount   `shouldEqual` 0
     s.incorrectCount `shouldEqual` 1
-    s.totalTyped `shouldEqual` 1
+    s.totalTyped     `shouldEqual` 1
+    s.totalErrors    `shouldEqual` 1
 
   it "removing a correct char decrements correctCount" do
     let s1 = updateStats emptyStats "" "h" target
     let s2 = updateStats s1 "h" "" target
-    s2.correctCount `shouldEqual` 0
+    s2.correctCount   `shouldEqual` 0
     s2.incorrectCount `shouldEqual` 0
-    s2.totalTyped `shouldEqual` 0
+    s2.totalTyped     `shouldEqual` 0
 
-  it "removing an incorrect char decrements incorrectCount" do
+  it "removing an incorrect char decrements incorrectCount but not totalErrors" do
     let s1 = updateStats emptyStats "" "x" target
     let s2 = updateStats s1 "x" "" target
     s2.incorrectCount `shouldEqual` 0
-    s2.totalTyped `shouldEqual` 0
+    s2.totalTyped     `shouldEqual` 0
+    s2.totalErrors    `shouldEqual` 1
 
   it "same-length input leaves stats unchanged" do
     let s = updateStats emptyStats "h" "h" target
@@ -166,19 +174,28 @@ updateStatsSpec = describe "updateStats" do
 
   it "typing past end of target only updates totalTyped" do
     let shortTarget = CU.toCharArray "hi"
-    let s = updateStats { correctCount: 2, incorrectCount: 0, totalTyped: 2 } "hi" "hix" shortTarget
-    s.totalTyped `shouldEqual` 3
+    let s = updateStats { correctCount: 2, incorrectCount: 0, totalTyped: 2, totalErrors: 0 } "hi" "hix" shortTarget
+    s.totalTyped   `shouldEqual` 3
     s.correctCount `shouldEqual` 2
 
   it "typing two correct chars accumulates correctly" do
     let s1 = updateStats emptyStats "" "h" target
     let s2 = updateStats s1 "h" "he" target
     s2.correctCount `shouldEqual` 2
-    s2.totalTyped `shouldEqual` 2
+    s2.totalTyped   `shouldEqual` 2
+    s2.totalErrors  `shouldEqual` 0
 
   it "correctCount never goes negative" do
     let s = updateStats emptyStats "" "" target
     s.correctCount `shouldEqual` 0
+
+  it "totalErrors accumulates across correction" do
+    let s1 = updateStats emptyStats "" "x" target   -- wrong
+    let s2 = updateStats s1 "x" "" target            -- backspace
+    let s3 = updateStats s2 "" "h" target            -- correct replacement
+    s3.totalErrors    `shouldEqual` 1
+    s3.correctCount   `shouldEqual` 1
+    s3.incorrectCount `shouldEqual` 0
 
   it "totalTyped equals correctCount plus incorrectCount after forward typing" do
     let s1 = updateStats emptyStats "" "h" target
