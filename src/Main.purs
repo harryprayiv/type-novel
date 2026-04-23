@@ -21,6 +21,7 @@ import Data.Argonaut.Parser (jsonParser)
 import Data.Array ((!!), mapWithIndex)
 import Data.Array as Array
 import Data.Bifunctor (lmap)
+import Data.Char (toCharCode)
 import Data.DateTime.Instant (Instant, diff)
 import Data.Either (Either(..), hush)
 import Data.Int (floor, toNumber)
@@ -68,6 +69,84 @@ setItem k v = do
   w     <- window
   store <- localStorage w
   Storage.setItem k v store
+
+removeItem :: String -> Effect Unit
+removeItem k = do
+  w     <- window
+  store <- localStorage w
+  Storage.removeItem k store
+
+--------------------------------------------------------------------------------
+-- Content hashing
+-- djb2-style polynomial over 512 evenly-sampled characters.
+-- O(1) regardless of file size.
+--------------------------------------------------------------------------------
+
+hashContent :: String -> Int
+hashContent content =
+  let
+    len    = CU.length content
+    stride = max 1 (len / 512)
+    sample = Array.mapMaybe
+               (\i -> CU.charAt (i * stride) content)
+               (Array.range 0 511)
+  in
+    Array.foldl (\acc c -> acc * 31 + toCharCode c) 17 sample
+
+hashKey :: Int -> String
+hashKey h = "type-novel-book:" <> show h
+
+--------------------------------------------------------------------------------
+-- Per-book session progress
+--------------------------------------------------------------------------------
+
+lastActiveKey :: String
+lastActiveKey = "type-novel-last-active"
+
+type SessionRecord =
+  { bookFile    :: String
+  , contentHash :: Int
+  , chunkIndex  :: Int
+  , totalChunks :: Int
+  }
+
+encodeSession :: SessionRecord -> String
+encodeSession sr =
+  stringify $
+       "bookFile"    := sr.bookFile
+    ~> "contentHash" := sr.contentHash
+    ~> "chunkIndex"  := sr.chunkIndex
+    ~> "totalChunks" := sr.totalChunks
+    ~> jsonEmptyObject
+
+decodeSession :: String -> Maybe SessionRecord
+decodeSession str = do
+  json        <- hush (jsonParser str)
+  obj         <- hush (decodeJson json)
+  bookFile    <- hush (obj .: "bookFile")
+  contentHash <- hush (obj .: "contentHash")
+  chunkIndex  <- hush (obj .: "chunkIndex")
+  totalChunks <- hush (obj .: "totalChunks")
+  pure { bookFile, contentHash, chunkIndex, totalChunks }
+
+getSessionFor :: Int -> Effect (Maybe SessionRecord)
+getSessionFor h = do
+  mStr <- getItem (hashKey h)
+  pure $ mStr >>= decodeSession
+
+saveSessionFor :: Int -> SessionRecord -> Effect Unit
+saveSessionFor h sr = setItem (hashKey h) (encodeSession sr)
+
+clearSessionFor :: Int -> Effect Unit
+clearSessionFor = removeItem <<< hashKey
+
+setLastActive :: SessionRecord -> Effect Unit
+setLastActive sr = setItem lastActiveKey (encodeSession sr)
+
+loadLastActive :: Effect (Maybe SessionRecord)
+loadLastActive = do
+  mStr <- getItem lastActiveKey
+  pure $ mStr >>= decodeSession
 
 --------------------------------------------------------------------------------
 -- Lifetime stats
@@ -301,7 +380,6 @@ updateStats prev oldTyped newTyped targetChars =
                      , totalErrors    = prev.totalErrors    + (if isWrong then 1 else 0)
                      }
            _, _ -> prev { totalTyped = newLen }
-
     else if newLen < oldLen then
       let pos = oldLen - 1
       in if pos >= Array.length targetChars
@@ -313,7 +391,6 @@ updateStats prev oldTyped newTyped targetChars =
                   , incorrectCount = prev.incorrectCount - (if tc /= ic then 1 else 0)
                   }
            _, _ -> prev { totalTyped = newLen }
-
     else prev
 
 --------------------------------------------------------------------------------
@@ -394,8 +471,6 @@ focusInput = do
 showRounded :: Number -> String
 showRounded n = show (toNumber (floor (n * 10.0)) / 10.0)
 
--- Measures the viewport and estimates how many characters fill the
--- text-display area. Called once at startup; result is fixed for the session.
 computeChunkSize :: Effect Int
 computeChunkSize = do
   w  <- window
@@ -447,6 +522,8 @@ main = do
   typingTimerRef   <- Ref.new (Nothing :: Maybe TimeoutId)
   initialChunkSize <- computeChunkSize
   initialLifetime  <- loadLifetime
+  initialSession   <- loadLastActive
+  activeHashRef    <- Ref.new (0 :: Int)
 
   void $ runInBody Deku.do
 
@@ -463,6 +540,8 @@ main = do
     setAvailableBooks /\ availableBooks <- useState ([] :: Array String)
     setCurrentBook    /\ currentBook    <- useState (Nothing :: Maybe String)
     setLifetime       /\ lifetime       <- useState initialLifetime
+    setSavedSession   /\ savedSession   <- useState initialSession
+    setConfirmReset   /\ confirmReset   <- useState false
 
     --------------------------------------------------------------------------
     -- ST refs
@@ -474,6 +553,7 @@ main = do
     darkThemeRef    <- useRefST true                                darkTheme
     completionRef   <- useRefST (Nothing :: Maybe CompletionResult) completion
     lifetimeRef     <- useRefST initialLifetime                     lifetime
+    currentBookRef  <- useRefST (Nothing :: Maybe String)           currentBook
 
     --------------------------------------------------------------------------
     -- Derived Polls
@@ -505,55 +585,52 @@ main = do
             <$> darkTheme
 
     --------------------------------------------------------------------------
+    -- Session persistence
+    --------------------------------------------------------------------------
+
+    let persistSession :: Int -> Array TypingExercise -> Effect Unit
+        persistSession idx exs = do
+          mBook <- liftST currentBookRef
+          h     <- Ref.read activeHashRef
+          case mBook of
+            Nothing   -> pure unit
+            Just file ->
+              let sr = { bookFile:    file
+                       , contentHash: h
+                       , chunkIndex:  idx
+                       , totalChunks: Array.length exs
+                       }
+              in do
+                saveSessionFor h sr
+                setLastActive sr
+                setSavedSession (Just sr)
+
+    --------------------------------------------------------------------------
     -- Actions
     --------------------------------------------------------------------------
 
-    -- initialChunkSize is captured from the outer Effect do-block.
-    -- It never changes during the session; no Poll or STRef needed.
-    let loadBook :: String -> Effect Unit
-        loadBook filename = launchAff_ do
-          liftEffect $ setStatusMsg $ "Loading " <> prettifyName filename <> "\x2026"
-          result <- loadTextFile filename
-          liftEffect $ case result of
-            Left err -> setStatusMsg $ "Error: " <> err
-            Right content -> do
-              let chunks = chunkText initialChunkSize content
-              if Array.length chunks > 0
-              then do
-                setExercises chunks
-                setCurrentIndex 0
-                setKS initialKS
-                setCompletion Nothing
-                setCurrentBook (Just filename)
-                setStatusMsg
-                  $ prettifyName filename
-                 <> " - " <> show (Array.length chunks) <> " chunks."
-                void $ setTimeout 3000 (setStatusMsg "")
-                focusInput
-              else
-                setStatusMsg "Error: file was empty after cleaning."
-
-    let browseBooks :: Effect Unit
-        browseBooks = launchAff_ do
-          result <- fetchBookList
-          liftEffect $ case result of
-            Left err    -> setStatusMsg $ "Could not load book list: " <> err
-            Right books -> do
-              setAvailableBooks books
-              if Array.null books
-              then setStatusMsg "No .txt files found in public/books/"
-              else setStatusMsg ""
+    let goToChunk :: Int -> Effect Unit
+        goToChunk newIdx = do
+          exs <- liftST exercisesRef
+          setKS initialKS
+          setStatusMsg ""
+          setCompletion Nothing
+          setCurrentIndex newIdx
+          persistSession newIdx exs
+          void $ setTimeout 50 focusInput
 
     let advanceChunk :: Effect Unit
         advanceChunk = do
           idx <- liftST currentIndexRef
           exs <- liftST exercisesRef
-          let newIdx = if idx >= (Array.length exs - 1) then 0 else idx + 1
-          setKS initialKS
-          setStatusMsg ""
-          setCompletion Nothing
-          setCurrentIndex newIdx
-          void $ setTimeout 50 focusInput
+          let newIdx = if idx >= (Array.length exs - 1) then idx else idx + 1
+          goToChunk newIdx
+
+    let prevChunk :: Effect Unit
+        prevChunk = do
+          idx <- liftST currentIndexRef
+          let newIdx = if idx <= 0 then 0 else idx - 1
+          goToChunk newIdx
 
     let resetChunk :: Effect Unit
         resetChunk = do
@@ -567,6 +644,77 @@ main = do
           setCompletion Nothing
           focusInput
 
+    let resetBookProgress :: Effect Unit
+        resetBookProgress = do
+          h <- Ref.read activeHashRef
+          clearSessionFor h
+          removeItem lastActiveKey
+          setSavedSession Nothing
+          setConfirmReset false
+          goToChunk 0
+
+    let loadBook :: String -> Effect Unit
+        loadBook filename = launchAff_ do
+          liftEffect $ setStatusMsg $ "Loading " <> prettifyName filename <> "\x2026"
+          result <- loadTextFile filename
+          liftEffect $ case result of
+            Left err -> setStatusMsg $ "Error: " <> err
+            Right content -> do
+              let h      = hashContent content
+                  chunks = chunkText initialChunkSize content
+              if Array.length chunks == 0
+              then setStatusMsg "Error: file was empty after cleaning."
+              else do
+                mSession <- getSessionFor h
+                let targetIdx = case mSession of
+                      Just sr -> min sr.chunkIndex (Array.length chunks - 1)
+                      Nothing -> 0
+                    sr = { bookFile:    filename
+                         , contentHash: h
+                         , chunkIndex:  targetIdx
+                         , totalChunks: Array.length chunks
+                         }
+                Ref.write h activeHashRef
+                setExercises chunks
+                setCurrentIndex targetIdx
+                setKS initialKS
+                setCompletion Nothing
+                setConfirmReset false
+                setCurrentBook (Just filename)
+                setSavedSession (Just sr)
+                saveSessionFor h sr
+                setLastActive sr
+                setStatusMsg $
+                  prettifyName filename <>
+                  ( if isJust mSession
+                    then " - resuming chunk " <> show (targetIdx + 1)
+                         <> "/" <> show (Array.length chunks) <> "."
+                    else " - " <> show (Array.length chunks) <> " chunks."
+                  )
+                void $ setTimeout 3000 (setStatusMsg "")
+                -- Delay past Deku's <#~> rebuilds from setExercises/setCurrentIndex
+                -- before focusing, otherwise the DOM mutations steal focus back.
+                void $ setTimeout 150 focusInput
+
+    let resumeSession :: Effect Unit
+        resumeSession = launchAff_ do
+          mSr <- liftEffect loadLastActive
+          case mSr of
+            Nothing -> liftEffect $ setStatusMsg "No saved session found."
+            Just sr -> liftEffect (loadBook sr.bookFile)
+
+    let browseBooks :: Effect Unit
+        browseBooks = launchAff_ do
+          result <- fetchBookList
+          liftEffect $ case result of
+            Left err    -> setStatusMsg $ "Could not load book list: " <> err
+            Right books -> do
+              setAvailableBooks books
+              if Array.null books
+              then setStatusMsg "No .txt files found in public/books/"
+              else setStatusMsg ""
+          liftEffect focusInput
+
     --------------------------------------------------------------------------
     -- Keystroke handler
     --------------------------------------------------------------------------
@@ -574,6 +722,10 @@ main = do
     let handleKeyPress :: KeyboardEvent -> Effect Unit
         handleKeyPress keyEvent =
           when (not (isComposing keyEvent)) do
+            when (code keyEvent == "Escape") do
+              setCompletion Nothing
+              setConfirmReset false
+
             mComp <- liftST completionRef
             if isJust mComp
             then do
@@ -726,6 +878,7 @@ main = do
                 (renderChunk ex.chars keystrokeState)
           ]
 
+      -- Completion overlay
       , completion <#~> case _ of
           Nothing -> D.div [ DA.klass_ "results-hidden" ] []
           Just r  ->
@@ -753,6 +906,46 @@ main = do
                   ]
               ]
 
+      -- Reset confirmation overlay
+      , confirmReset <#~> \asking ->
+          if not asking
+          then D.div [ DA.klass_ "results-hidden" ] []
+          else
+            D.div [ DA.klass_ "results-overlay" ]
+              [ D.div [ DA.klass_ "results-card confirm-card" ]
+                  [ D.h2 [ DA.klass_ "results-title confirm-title" ]
+                      [ text_ "\x26A0 Reset Book Progress?" ]
+                  , D.p [ DA.klass_ "confirm-body" ]
+                      [ text $
+                          (\cb -> case cb of
+                            Nothing -> "No book is currently loaded."
+                            Just f  -> "This will erase all saved progress for \""
+                                    <> prettifyName f
+                                    <> "\" and return to chunk 1. This cannot be undone."
+                          ) <$> currentBook
+                      ]
+                  , D.div [ DA.klass_ "confirm-buttons" ]
+                      [ D.button
+                          [ DA.klass_ "btn btn-confirm-cancel"
+                          , DL.click_ $ const do
+                              setConfirmReset false
+                              focusInput
+                          ]
+                          [ text_ "Cancel" ]
+                      , D.button
+                          [ DA.klass_ "btn btn-confirm-ok"
+                          , DL.click_ $ const resetBookProgress
+                          ]
+                          [ text_ "Yes, Reset" ]
+                      ]
+                  , D.p [ DA.klass_ "confirm-hint" ]
+                      [ text_ "Press Escape to cancel" ]
+                  ]
+              ]
+
+      -- Off-screen textarea: sole keystroke capture mechanism.
+      -- autofocus_ is set but cannot be relied upon for JS-rendered elements;
+      -- explicit focusInput calls after all state updates are the real mechanism.
       , D.textarea
           [ DA.klass_ "hidden-input"
           , DA.id_ "typing-input"
@@ -773,16 +966,41 @@ main = do
               [ text_ "Reset" ]
 
           , D.button
+              [ DA.klass_ "btn btn-nav"
+              , DL.click_ $ const prevChunk
+              ]
+              [ text_ "\x2190 Prev" ]
+
+          , D.button
               [ DA.klass_ "btn btn-primary"
               , DL.click_ $ const advanceChunk
               ]
-              [ text_ "Next" ]
+              [ text_ "Next \x2192" ]
 
           , D.button
               [ DA.klass_ "btn btn-load"
               , DL.click_ $ const browseBooks
               ]
               [ text_ "Browse Books" ]
+
+          , D.button
+              [ DA.klass_ "btn btn-danger"
+              , DL.click_ $ const (setConfirmReset true)
+              ]
+              [ text_ "Reset Book" ]
+
+          , savedSession <#~> case _ of
+              Nothing -> D.div [ DA.klass_ "resume-empty" ] []
+              Just sr ->
+                D.button
+                  [ DA.klass_ "btn btn-resume"
+                  , DL.click_ $ const resumeSession
+                  ]
+                  [ text_ $
+                      "Resume: " <> prettifyName sr.bookFile
+                      <> " (" <> show (sr.chunkIndex + 1)
+                      <> "/" <> show sr.totalChunks <> ")"
+                  ]
           ]
 
       , availableBooks <#~> \books ->
@@ -800,3 +1018,7 @@ main = do
                        [ text_ (prettifyName filename) ]
                  )
       ]
+
+  -- autofocus on a JS-inserted element does not fire in any browser.
+  -- Explicitly focus after the DOM has settled.
+  void $ setTimeout 100 focusInput
