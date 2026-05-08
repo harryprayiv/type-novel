@@ -1,7 +1,9 @@
 # type-novel
 
 A fast, minimal typing trainer for reading novels one chunk at a time.
-Built in PureScript with Deku, served by Vite. No backend required.
+Built in PureScript with Deku, served by Vite.
+
+No backend required.
 
 ---
 
