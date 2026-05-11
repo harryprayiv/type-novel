@@ -12,7 +12,7 @@ No backend required.
 Most typing trainers give you pangrams and random word lists. This one
 lets you type actual books — the text you've been meaning to read anyway.
 Drop a `.txt` file in `public/books/`, click Load, and start typing.
-Progress through the entire novel one 300-character chunk at a time.
+Progress through the entire novel one 300-character chunk at a time. 
 
 ---
 
